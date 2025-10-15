@@ -1,2 +1,4 @@
 # GalakuDeviceConnection
 Galaku是一个成人玩具品牌，有一个自己的联动管理软件App，有自己的蓝牙传输协议，此工具则是依据此协议与大部分可以联动的游戏和视频进行互动，将动作转发给玩具实现互动
+
+依据Buttplug.io协议，实现了大部分命令，目前这个工具只支持`GalakuDevice/device_items.json`里`"deviceType":1`的玩具
