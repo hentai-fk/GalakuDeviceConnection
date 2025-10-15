@@ -85,10 +85,10 @@ namespace ButtplugIo
                 DeviceEngine.SetScanningState(false);
             }
 
-            if (data.GetNode("ScalarCmd") != null)
+            if (data.GetNode("ScalarCmd") != null || data.GetNode("LinearCmd") != null)
             {
                 var item = data.GetNode();
-                DeviceEngine.ResolveCommandData(item.Name, item.Value);
+                DeviceEngine.ResolveCommandData(item.Name, item.Value as JObject);
             }
 
             if (data.GetNode("StopDeviceCmd") != null || data.GetNode("StopAllDevices") != null)

@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Newtonsoft.Json.Linq;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection.Emit;
@@ -17,8 +18,12 @@ namespace ButtplugIo.GalakuDevice
         public readonly BTDeviceInfo deviceInfo;
         private BluetoothLEDevice bleDevice;
         private GattCharacteristic charaWrite;
+        private List<GattCharacteristic> charaNotify = new List<GattCharacteristic>();
 
 
+        private object closeObjectLocker = new object();
+
+        private byte batteryValue = 100;
         private byte[] sendBuffer = new byte[10];
 
 
@@ -26,18 +31,43 @@ namespace ButtplugIo.GalakuDevice
 
         public static async Task<BleControl> CreateBleControl(BTDeviceInfo deviceInfo, BluetoothLEDevice bleDevice)
         {
-            var gattServicesResult = await bleDevice?.GetGattServicesForUuidAsync(WRITE_SERVICE_UUID);
-            if (gattServicesResult.Status == GattCommunicationStatus.Success)
+            var servicesResult = await bleDevice?.GetGattServicesAsync(BluetoothCacheMode.Uncached);
+            if (servicesResult.Status == GattCommunicationStatus.Success)
             {
-                var serviceWrite = gattServicesResult.Services[0];
-                var gattCharacteristicsResult = await serviceWrite?.GetCharacteristicsForUuidAsync(WRITE_CHARACTERISTIC_UUID);
-                if (gattCharacteristicsResult?.Status == GattCommunicationStatus.Success)
+                var instance = new BleControl(deviceInfo) { bleDevice = bleDevice };
+                foreach (var service in servicesResult.Services)
                 {
-                    return new BleControl(deviceInfo)
+                    var characteristicsResult = await service.GetCharacteristicsAsync(BluetoothCacheMode.Uncached);
+                    if (characteristicsResult.Status == GattCommunicationStatus.Success)
                     {
-                        bleDevice = bleDevice,
-                        charaWrite = gattCharacteristicsResult.Characteristics[0],
-                    };
+                        foreach (var characteristic in characteristicsResult.Characteristics)
+                        {
+                            if (instance.charaWrite == null && service.Uuid == WRITE_SERVICE_UUID && characteristic.Uuid == WRITE_CHARACTERISTIC_UUID)
+                            {
+                                instance.charaWrite = characteristic;
+                                continue;
+                            }
+                            if (characteristic.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Notify))
+                            {
+                                instance.charaNotify.Add(characteristic);
+                            }
+                        }
+                    }
+                }
+                if (instance.charaWrite != null)
+                {
+                    // 接收通知
+                    foreach (var item in instance.charaNotify)
+                    {
+                        var status = await item.WriteClientCharacteristicConfigurationDescriptorAsync(
+                            GattClientCharacteristicConfigurationDescriptorValue.Notify
+                        );
+                        if (status == GattCommunicationStatus.Success)
+                        {
+                            item.ValueChanged += instance.OnCharacteristicChanged;
+                        }
+                    }
+                    return instance;
                 }
             }
             return null;
@@ -50,20 +80,40 @@ namespace ButtplugIo.GalakuDevice
 
         public void Close()
         {
-            try { charaWrite?.Service?.Dispose(); } catch { }
-            try { bleDevice?.Dispose(); } catch { }
-            bleDevice = null;
-            charaWrite = null;
+            lock (closeObjectLocker)
+            {
+                try { bleDevice?.Dispose(); } catch { }
+                bleDevice = null;
+                charaWrite = null;
+                charaNotify = null;
+            }
+        }
+
+        private void OnCharacteristicChanged(GattCharacteristic sender, GattValueChangedEventArgs args)
+        {
+            var dataReader = DataReader.FromBuffer(args.CharacteristicValue);
+            var data = new byte[dataReader.UnconsumedBufferLength];
+            dataReader.ReadBytes(data);
+            if (data.Length >= 12)
+            {
+                receiveBytes(EnDesCommand.Decrypt(data));
+            }
         }
 
         public void SendControl()
         {
             if (!deviceInfo.IsDataChanged)
                 return;
+            deviceInfo.IsDataChanged = false;
             if (deviceInfo.DeviceTypeInt == (int)DeviceType.DeviceShakeTwo)
             {
                 sendIntensityTwo(Math.Max(0, Math.Min(100, deviceInfo.MadaValueA)));
             }
+        }
+
+        public string GetBatteryText()
+        {
+            return $"{batteryValue}%";
         }
 
         public void SendHotLevel(int level)
@@ -101,6 +151,46 @@ namespace ButtplugIo.GalakuDevice
             }
         }
 
+        public void receiveBytes(byte[] bArr)
+        {
+            if (bArr.Count() >= 16)
+            {
+                byte b = bArr[2];
+                byte b2 = bArr[3];
+                if (b == 12)
+                {
+                    updateBattery(b2);
+                }
+            }
+            else if (bArr.Count() >= 12)
+            {
+                byte b3 = bArr[2];
+                if (b3 == unchecked((byte)-79))
+                {
+                    byte b4 = bArr[4];
+                    byte b5 = bArr[6];
+                    byte b6 = bArr[9];
+                    updateBattery(b4);
+                    updateLedByte(b6);
+                    updateHotLevel(b5);
+                }
+            }
+        }
+
+        private void updateBattery(byte value)
+        {
+            batteryValue = value;
+        }
+
+        private void updateHotLevel(byte value)
+        {
+            if (deviceInfo.HotLevel == value)
+            {
+                SendHotLevel(deviceInfo.HotLevel);
+            }
+        }
+
+        private void updateLedByte(byte value) { }
 
         private byte[] getIntensityBytesTwo(int var1)
         {

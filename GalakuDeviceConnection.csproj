@@ -37,6 +37,7 @@
   <ItemGroup>
     <Reference Include="System" />
     <Reference Include="System.Core" />
+    <Reference Include="System.Windows.Forms" />
     <Reference Include="System.Xml.Linq" />
     <Reference Include="System.Data.DataSetExtensions" />
     <Reference Include="Microsoft.CSharp" />
@@ -51,6 +52,7 @@
     <Compile Include="GalakuDevice\BluetoothManager.cs" />
     <Compile Include="GalakuDevice\BTDeviceInfo.cs" />
     <Compile Include="GalakuDevice\EnDesCommand.cs" />
+    <Compile Include="GalakuDevice\MathCalScaler.cs" />
     <Compile Include="JsonData.cs" />
     <Compile Include="ProcessRequest.cs" />
     <Compile Include="Program.cs" />
@@ -65,6 +67,9 @@
   <ItemGroup>
     <PackageReference Include="Bluetooth">
       <Version>1.0.0.2</Version>
+    </PackageReference>
+    <PackageReference Include="MouseKeyHook">
+      <Version>5.7.1</Version>
     </PackageReference>
     <PackageReference Include="Newtonsoft.Json">
       <Version>13.0.4</Version>

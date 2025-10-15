@@ -25,7 +25,11 @@ namespace ButtplugIo
             {
                 GalakuManager.ExecuteInputKey(k);
             });
-            new Thread(() =>
+            Program.AddGlobalInputKeyAction((k, b) =>
+            {
+                GalakuManager.ExecuteGlobalKey(k, b);
+            });
+            Task.Run(() =>
             {
                 while (true)
                 {
@@ -43,7 +47,7 @@ namespace ButtplugIo
                     }
                     Thread.Sleep(1000);
                 }
-            }).Start();
+            });
         }
 
         private static bool SendDeviceAdded(DeviceInfo deviceInfo)
@@ -103,6 +107,7 @@ namespace ButtplugIo
                 try
                 {
                     // 从缓存中加载上一次的设备信息
+                    // 如需虚拟化设备，可以访问 
                     deviceSerialization = File.ReadAllText("DeviceRecordNextTime.json");
                     deviceInfo = JsonConvert.DeserializeObject<DeviceInfo>(deviceSerialization);
                 } catch { }
@@ -110,7 +115,7 @@ namespace ButtplugIo
             return deviceInfo;
         }
 
-        public static void ResolveCommandData(string name, JToken data)
+        public static void ResolveCommandData(string name, JObject data)
         {
             GetDeviceManager()?.ExecuteCommand(name, data);
         }

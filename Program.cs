@@ -1,4 +1,5 @@
 ﻿using ButtplugIo.GalakuDevice;
+using Gma.System.MouseKeyHook;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
@@ -10,7 +11,9 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Forms;
 using Windows.Networking.Sockets;
+using Windows.UI.Core;
 
 namespace ButtplugIo
 {
@@ -20,13 +23,19 @@ namespace ButtplugIo
         private const string ServerUrl = "http://127.0.0.1:12345/";
 
         private static readonly List<Action<ConsoleKey>> consoleInputActions = new List<Action<ConsoleKey>>();
+        private static readonly List<Action<System.Windows.Forms.KeyEventArgs, bool>> globalInputActions = new List<Action<System.Windows.Forms.KeyEventArgs, bool>>();
         private static WebSocket tempWebSocket;
 
-        public static async Task Main(string[] args)
+        public static void Main(string[] args)
         {
             DeviceEngine.GetDeviceInfo();
-            Console.WriteLine($"Buttplug 服务器正在监听: {ServerUrl}");
+            var _ = Task.Run(BindUrl);
+            Application.Run();
+        }
 
+        private static async Task BindUrl()
+        {
+            Console.WriteLine($"Buttplug 服务器正在监听: {ServerUrl}");
             // HttpListener 用于接受 HTTP 请求，然后升级到 WebSocket
             using (var listener = new HttpListener())
             {
@@ -206,7 +215,7 @@ namespace ButtplugIo
             lock (consoleInputActions)
             {
                 consoleInputActions.Add(action);
-                if (consoleInputActions.Count > 0)
+                if (consoleInputActions.Count == 1)
                 {
                     new Thread(() =>
                     {
@@ -222,6 +231,30 @@ namespace ButtplugIo
                             }
                         }
                     }).Start();
+                }
+            }
+        }
+
+        public static void AddGlobalInputKeyAction(Action<System.Windows.Forms.KeyEventArgs, bool> action)
+        {
+            lock (globalInputActions)
+            {
+                globalInputActions.Add(action);
+                if (globalInputActions.Count == 1)
+                {
+                    Hook.GlobalEvents().KeyDown += (sender, e) => OnKeyDownUpEvent(sender, e, true);
+                    Hook.GlobalEvents().KeyUp += (sender, e) => OnKeyDownUpEvent(sender, e, false);
+                }
+            }
+        }
+
+        private static void OnKeyDownUpEvent(object sender, System.Windows.Forms.KeyEventArgs e, bool b)
+        {
+            lock (globalInputActions)
+            {
+                foreach (var item in globalInputActions)
+                {
+                    item(e, b);
                 }
             }
         }

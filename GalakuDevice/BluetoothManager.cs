@@ -9,6 +9,7 @@ using System.Reflection.Emit;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Forms;
 using System.Xml.Linq;
 using Windows.Devices.Bluetooth;
 using Windows.Devices.Bluetooth.Advertisement;
@@ -24,6 +25,14 @@ namespace ButtplugIo.GalakuDevice
         private readonly object deviceLocker = new object();
         private BTDeviceInfo bluetoothDevice;
         private BleControl bleControl;
+
+        private Queue<Action> queueActionControl = new Queue<Action>();
+
+        private bool toggleScale2Linear;
+        private bool globalEnterBurstMode;
+        private bool globalInputKeyQ;
+        private bool globalInputKeyW;
+        private bool globalInputKeyE;
 
         static BluetoothManager() 
         {
@@ -49,6 +58,22 @@ namespace ButtplugIo.GalakuDevice
             {
                 throw new Exception($"无法查找蓝牙设备: {ex.Message}");
             }
+            // 发送命令的线程
+            Task.Run(() =>
+            {
+                Monitor.Enter(queueActionControl);
+                while (true)
+                {
+                    while (queueActionControl.Count > 0)
+                    {
+                        queueActionControl.Dequeue()();
+                        Monitor.Exit(queueActionControl);
+                        // 这里释放锁一次，有机会在执行过程中间清空队列
+                        Monitor.Enter(queueActionControl);
+                    }
+                    Monitor.Wait(queueActionControl);
+                }
+            });
         }
 
         void OnAdvertisementReceived(BluetoothLEAdvertisementWatcher sender, BluetoothLEAdvertisementReceivedEventArgs args)
@@ -91,6 +116,29 @@ namespace ButtplugIo.GalakuDevice
             }
         }
 
+        void SendControl(Action action, bool clear = false, bool skip = false, int sleep = 0)
+        {
+            lock (queueActionControl)
+            {
+                if (clear)
+                    queueActionControl.Clear();
+                queueActionControl.Enqueue(() =>
+                {
+                    lock (deviceLocker)
+                    {
+                        if (!CheckConnection())
+                            return;
+                        action();
+                        if (!skip)
+                            bleControl.SendControl();
+                        if (sleep > 0)
+                            Thread.Sleep(sleep);
+                    }
+                });
+                Monitor.PulseAll(queueActionControl);
+            }
+        }
+
         async void ConnectToDevice(ulong address)
         {
             try
@@ -111,7 +159,7 @@ namespace ButtplugIo.GalakuDevice
             ResetConnection();
         }
 
-        private bool CheckConnection()
+        bool CheckConnection()
         {
             if (bleControl?.IsConnected() == false)
             {
@@ -125,7 +173,7 @@ namespace ButtplugIo.GalakuDevice
         {
             if (bluetoothDevice.DeviceTypeInt == (int)DeviceType.DeviceShakeTwo)
             {
-                Console.WriteLine("按键Z、X、C分别控制拍打、震动、加热的开关，其它按键显示当前状态");
+                Console.WriteLine("按键Z、X、C、V分别控制拍打、震动、插入越深越强烈模式、加热的开关，按键A、S控制强度加减，同时按下W、E、R任意两个按键进入爆发模式然后全部松开这三个按键之后进入静止状态，其它按键显示当前状态");
                 bleControl.SendHotLevel(bluetoothDevice.HotLevel);
                 bleControl.SendControl();
                 return;
@@ -150,8 +198,17 @@ namespace ButtplugIo.GalakuDevice
                                 new
                                 {
                                     StepCount = 100,
-                                    FeatureDescriptor = "马达震动数值",
+                                    FeatureDescriptor = "震动强度数值，0~100",
                                     ActuatorType = "Vibrate",
+                                },
+                            },
+                            LinearCmd = new object[]
+                            {
+                                new
+                                {
+                                    StepCount = 100,
+                                    FeatureDescriptor = "线性伸缩高度，0~100",
+                                    ActuatorType = "Position",
                                 },
                             }
                         }
@@ -161,7 +218,7 @@ namespace ButtplugIo.GalakuDevice
             }
         }
 
-        public void ExecuteCommand(string name, JToken data)
+        public void ExecuteCommand(string name, JObject data)
         {
             lock (deviceLocker)
             {
@@ -169,23 +226,49 @@ namespace ButtplugIo.GalakuDevice
                     return;
                 if (bluetoothDevice.DeviceTypeInt == (int)DeviceType.DeviceShakeTwo)
                 {
-                    if (name == "ScalarCmd")
+                    if (name == "ScalarCmd" || name == "LinearCmd")
                     {
-                        double Scalar = -1;
-                        foreach (var item in data["Scalars"])
+                        if (!toggleScale2Linear)
                         {
-                            if (item["ActuatorType"].Value<string>() == "Vibrate"){
-                                Scalar = item["Scalar"].Value<double>();
-                                break;
+                            if (name != "ScalarCmd")
+                                return;
+                            double Scalar = -1;
+                            foreach (var item in data["Scalars"])
+                            {
+                                if (item["ActuatorType"].Value<string>() == "Vibrate")
+                                {
+                                    Scalar = item["Scalar"].Value<double>();
+                                    break;
+                                }
                             }
+                            if (Scalar == -1)
+                            {
+                                Scalar = data["Scalars"].First()["Scalar"].Value<double>();
+                            }
+                            SendControl(() =>
+                            {
+                                // 马达震动幅度就是0~100
+                                bluetoothDevice.MadaValueA = (int)Math.Round(100 * Scalar);
+                            }, true);
                         }
-                        if (Scalar == -1)
+                        else
                         {
-                            Scalar = data["Scalars"].First()["Scalar"].Value<double>();
+                            if (name != "LinearCmd")
+                                return;
+                            var Vector = data["Vectors"].First();
+                            var Position = Vector["Position"].Value<double>();
+                            var Duration = Vector["Duration"].Value<int>();
+                            SendControl(() =>
+                            {
+                                foreach (var item in MathCalScaler.CalScalerWithTime(bluetoothDevice.MadaValueA / 100.0, Position, Duration, 10))
+                                {
+                                    SendControl(() =>
+                                    {
+                                        bluetoothDevice.MadaValueA = (int) Math.Round(item * 100);
+                                    }, false, false, 10);
+                                }
+                            }, true, true);
                         }
-                        // 马达震动幅度就是0~100
-                        bluetoothDevice.MadaValueA = (int) Math.Round(100 * Scalar);
-                        bleControl.SendControl();
                     }
                     return;
                 }
@@ -198,24 +281,88 @@ namespace ButtplugIo.GalakuDevice
             {
                 if (!CheckConnection())
                     return;
+                if (globalEnterBurstMode)
+                    return;
                 if (inputKey == ConsoleKey.Z)
                 {
-                    bluetoothDevice.MadaEnableA = !bluetoothDevice.MadaEnableA;
-                    Console.WriteLine((bluetoothDevice.MadaEnableA ? "开启" : "关闭") + "拍打");
+                    SendControl(() =>
+                    {
+                        bluetoothDevice.MadaEnableA = !bluetoothDevice.MadaEnableA;
+                        Console.WriteLine((bluetoothDevice.MadaEnableA ? "开启" : "关闭") + "拍打");
+                    });
                 }
                 if (inputKey == ConsoleKey.X)
                 {
-                    bluetoothDevice.MadaEnableB = !bluetoothDevice.MadaEnableB;
-                    Console.WriteLine((bluetoothDevice.MadaEnableB ? "开启" : "关闭") + "震动");
+                    SendControl(() =>
+                    {
+                        bluetoothDevice.MadaEnableB = !bluetoothDevice.MadaEnableB;
+                        Console.WriteLine((bluetoothDevice.MadaEnableB ? "开启" : "关闭") + "震动");
+                    });
                 }
                 if (inputKey == ConsoleKey.C)
+                {
+                    toggleScale2Linear = !toggleScale2Linear;
+                    Console.WriteLine(toggleScale2Linear ? "插入越深越强烈模式" : "震动数值模式");
+                }
+                if (inputKey == ConsoleKey.V)
                 {
                     bluetoothDevice.HotLevel = bluetoothDevice.HotLevel != 0 ? 0 : 1;
                     bleControl.SendHotLevel(bluetoothDevice.HotLevel);
                     Console.WriteLine((bluetoothDevice.HotLevel == 0 ? "开启" : "关闭") + "加热");
                 }
-                bleControl.SendControl();
-                Console.WriteLine($"当前状态: 拍打={bluetoothDevice.MadaEnableA} 震动={bluetoothDevice.MadaEnableB} 加热={bluetoothDevice.HotLevel==0}");
+                if (inputKey == ConsoleKey.A || inputKey == ConsoleKey.S)
+                {
+                    SendControl(() =>
+                    {
+                        bluetoothDevice.MadaValueA = Math.Max(0, Math.Min(100, bluetoothDevice.MadaValueA + (inputKey == ConsoleKey.A ? -5 : 5)));
+                        Console.WriteLine((inputKey == ConsoleKey.A ? "降低" : "提高") + "强度到" + bluetoothDevice.MadaValueA);
+                    });
+                }
+                Console.WriteLine($"当前状态: 拍打={bluetoothDevice.MadaEnableA} 震动={bluetoothDevice.MadaEnableB} 强度={bluetoothDevice.MadaValueA} 插入越深越强烈模式={toggleScale2Linear} 加热={bluetoothDevice.HotLevel==0} 电源={bleControl.GetBatteryText()}");
+            }
+        }
+
+        public void ExecuteGlobalKey(KeyEventArgs inputKey, bool isKeyDown)
+        {
+            lock (deviceLocker)
+            {
+                if (!CheckConnection())
+                    return;
+                if (inputKey.KeyCode == Keys.Q)
+                    globalInputKeyQ = isKeyDown;
+                if (inputKey.KeyCode == Keys.W)
+                    globalInputKeyW = isKeyDown;
+                if (inputKey.KeyCode == Keys.E)
+                    globalInputKeyE = isKeyDown;
+                var burstValue = (globalInputKeyQ ? 1 : 0) + (globalInputKeyW ? 1 : 0) + (globalInputKeyE ? 1 : 0);
+                if (burstValue >= 2 && !globalEnterBurstMode)
+                {
+                    globalEnterBurstMode = true;
+                    Console.WriteLine("进入爆发模式");
+                }
+                if (globalEnterBurstMode)
+                {
+                    if (burstValue == 0)
+                    {
+                        globalEnterBurstMode = false;
+                        Console.WriteLine("开始冷静状态");
+                        SendControl(() =>
+                        {
+                            bluetoothDevice.MadaValueA = 0;
+                            bluetoothDevice.MadaEnableA = false;
+                            bluetoothDevice.MadaEnableB = false;
+                        }, true);
+                    }
+                    else
+                    {
+                        SendControl(() =>
+                        {
+                            bluetoothDevice.MadaValueA = 100;
+                            bluetoothDevice.MadaEnableA = true;
+                            bluetoothDevice.MadaEnableB = true;
+                        }, true);
+                    }
+                }
             }
         }
 
@@ -225,8 +372,12 @@ namespace ButtplugIo.GalakuDevice
             {
                 if (!CheckConnection())
                     return;
-                bluetoothDevice.MadaValueA = 0;
-                bleControl.SendControl();
+                SendControl(() =>
+                {
+                    bluetoothDevice.MadaValueA = 0;
+                    bluetoothDevice.MadaEnableA = false;
+                    bluetoothDevice.MadaEnableB = false;
+                }, true);
             }
         }
     }
