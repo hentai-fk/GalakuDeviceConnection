@@ -10,8 +10,8 @@ namespace ButtplugIo.GalakuDevice
     {
         public static List<double> CalScalerWithTime(double start, double end, int duration, int sleep)
         {
-            var append = (start - end) * sleep / duration;
-            var count = (int) Math.Round(append);
+            var append = (end - start) * sleep / duration;
+            var count = (int) Math.Round((double) duration / sleep);
             var result = new List<double>();
             for (int i = 0; i < count; i++)
             {
